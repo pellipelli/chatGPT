@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FFTA風タクティカルシミュレーション</title>
+  <style>
+    body { margin: 0; font-family: "Segoe UI", sans-serif; background:#1f2430; color:#eee; }
+    .layout { display:grid; grid-template-columns: 980px 1fr; grid-template-rows: 1fr 180px; gap:10px; height:100vh; padding:10px; box-sizing:border-box; }
+    .panel { background:#2b3245; border-radius:10px; padding:10px; box-sizing:border-box; }
+    #mapPanel { grid-column:1; grid-row:1; }
+    #sidePanel { grid-column:2; grid-row:1; display:grid; grid-template-rows: 1fr 1fr 1fr auto; gap:10px; }
+    #logPanel { grid-column:1 / span 2; grid-row:2; overflow:auto; }
+    #scenarioBox { margin-bottom:8px; font-size:13px; color:#d6e2ff; }
+    #map { display:grid; grid-template-columns: repeat(15, 60px); grid-template-rows: repeat(15, 42px); gap:2px; }
+
+    .tile { border-radius:4px; border:1px solid #0005; font-size:10px; display:flex; align-items:center; justify-content:center; position:relative; cursor:pointer; user-select:none; }
+    .tile.reachable { outline:2px solid #ffd166; }
+    .tile.targetable { outline:2px solid #ef476f; }
+    .tile.healable { outline:2px solid #7db8ff; }
+    .tile.selected { outline:2px solid #00f5d4; }
+    .tile.movedUnit { filter: saturate(0.75); }
+    .tile.doneUnit { filter: grayscale(0.25) brightness(0.9); }
+    .unitBadge { position:absolute; top:2px; right:2px; font-weight:bold; font-size:10px; background:#0008; border-radius:4px; padding:0 4px; }
+    .unitName { position:absolute; left:2px; bottom:1px; right:2px; font-size:10px; background:#0009; border-radius:3px; padding:0 3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .hpBarWrap { position:absolute; left:2px; right:2px; top:1px; height:5px; background:#0008; border-radius:2px; overflow:hidden; }
+    .hpBar { height:100%; background:linear-gradient(90deg,#42d392,#88e06a); }
+
+    .row { display:flex; justify-content:space-between; gap:8px; border-bottom:1px solid #ffffff1f; padding:4px 0; font-size:13px; }
+    h3 { margin:0 0 8px 0; font-size:16px; }
+    button { margin:3px; padding:6px 10px; border:none; border-radius:6px; background:#6c8cff; color:white; cursor:pointer; }
+    button:hover { opacity:.9; }
+    .warn { background:#a56ef5; }
+    .small { font-size:12px; opacity:.85; }
+    #statusBar { margin-bottom:6px; }
+    .legendGrid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:6px 10px; font-size:12px; }
+    .legendItem { display:flex; align-items:center; gap:8px; }
+    .swatch { width:14px; height:14px; border-radius:3px; border:1px solid #0008; }
+
+    .tile.flash-attacker { animation: flashAttacker .35s ease-in-out 1; }
+    .tile.flash-defender { animation: flashDefender .35s ease-in-out 1; }
+    @keyframes flashAttacker { 0%{filter:brightness(1);} 50%{filter:brightness(1.9);} 100%{filter:brightness(1);} }
+    @keyframes flashDefender { 0%{transform:translateX(0);} 25%{transform:translateX(-2px);} 50%{transform:translateX(2px); filter:brightness(2);} 100%{transform:translateX(0);} }
+    .battlePop { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-weight:700; text-shadow:0 0 4px #000; pointer-events:none; animation: pop .75s ease-out 1; }
+    .battlePop.hit { color:#7dffb3; }
+    .battlePop.avoid { color:#8fd3ff; }
+    .battlePop.dmg { color:#ffe66d; top:62%; }
+    .battlePop.heal { color:#7dffef; }
+    @keyframes pop { 0%{opacity:0; transform:translate(-50%,-30%) scale(.8);} 20%{opacity:1;} 100%{opacity:0; transform:translate(-50%,-120%) scale(1.05);} }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div id="mapPanel" class="panel">
+    <div id="statusBar"></div>
+    <div id="scenarioBox"></div>
+    <div id="map"></div>
+  </div>
+  <div id="sidePanel">
+    <div class="panel"><h3>味方ステータス</h3><div id="allyList"></div></div>
+    <div class="panel"><h3>敵ステータス</h3><div id="enemyList"></div></div>
+    <div class="panel">
+      <h3>コマンド</h3>
+      <div>
+        <button id="endTurnBtn">ターン終了</button>
+        <button id="waitBtn" class="warn">防御</button>
+        <button id="jobBtn">ジョブチェンジ</button>
+        <button id="saveBtn">セーブ</button>
+        <button id="loadBtn">ロード</button>
+        <button id="nextStageBtn">次ステージ</button>
+      </div>
+      <div class="small">15x15 / 最大出撃8 / 防御: 次の自ターンまで回避・防御UP / キー: E終,S保存,L読込,N次</div>
+    </div>
+    <div class="panel"><h3>地形凡例（移動コスト / 効果）</h3><div id="terrainLegend" class="legendGrid"></div></div>
+  </div>
+  <div id="logPanel" class="panel"><h3>ログ</h3><div id="log"></div></div>
+</div>
+
+<script>
+const MAP_W = 15, MAP_H = 15, MAX_DEPLOY = 8;
+const TERRAIN = ["草原","山","森林","毒沼","砦","水辺","砂漠"];
+const TERRAIN_COLORS = {草原:"#7fbf7f", 山:"#8d7b68", 森林:"#3f7f3f", 毒沼:"#5b7d5b", 砦:"#777", 水辺:"#4e8ccf", 砂漠:"#c8b46a"};
+const TERRAIN_COST = {草原:1, 山:3, 森林:2, 毒沼:3, 砦:1, 水辺:99, 砂漠:2};
+const TERRAIN_EFFECT = {草原:"標準地形", 山:"移動やや困難・防御微増", 森林:"移動やや重い・防御微増", 毒沼:"危険地帯", 砦:"守備向き（防御高）", 水辺:"通常進入不可", 砂漠:"移動やや重い"};
+
+const BGM_TRACKS = {
+  annihilation: "music/Nebula_Annihilation_(SubjugationBattle).mp3",
+};
+
+const JOBS = {
+  ナイト:{hp:130, atk:20, mag:8, agi:10, move:5, range:1, eva:0.10, def:0.10},
+  アーチャー:{hp:105, atk:18, mag:8, agi:13, move:5, range:3, eva:0.10, def:0.08},
+  黒魔道士:{hp:95, atk:8, mag:18, agi:11, move:4, range:4, eva:0.10, def:0.06, aoe:true},
+  白魔道士:{hp:100, atk:8, mag:20, agi:11, move:4, range:3, eva:0.10, def:0.08, healer:true},
+  モンク:{hp:120, atk:22, mag:6, agi:12, move:5, range:1, eva:0.22, def:0.14},
+  シーフ:{hp:100, atk:16, mag:10, agi:17, move:6, range:3, eva:0.36, def:0.09},
+};
+
+const JP_ROMAN_FIRST = ["Haru","Yui","Ren","Mio","Riku","Sakura","Aoi","Takumi","Hina","Kota","Yuna","Sota","Akari","Shin","Kaori","Kenta"];
+const GLOBAL_FIRST = ["Luca","Sofia","Mila","Noah","Aisha","Omar","Liam","Chloe","Mateo","Eva","Anya","Dario","Ines","Leila","Nora","Iris"];
+const SCENARIO_WORDS = {
+  worlds:["Eldoria","Astra","Noctis","Velna","Radian"],
+  relics:["Star Core","Lumen Key","Aegis Sigil","Myth Seed","Azure Crown"],
+  villains:["Nemesis","Vark","Zephra","Mordain","Khalis"],
+  regions:["Frontier","Ruins","Forest Belt","Highland","Canal City","Citadel"]
+};
+
+const state = {
+  stage:1, clear50:false, turn:1, phase:"player", selected:null,
+  map:[], objective:null, goal:null, canAdvance:false,
+  roster:[], allies:[], enemies:[], npc:null, positions:{},
+  moved:new Set(), acted:new Set(), finished:new Set(), defeatedRecruitable:[],
+  stageTemplate:null, retryNoRelief:0, retryWithRelief:0, usedNames:new Set(),
+  scenario:null, bgmAudio:null, activeBgm:"-",
+};
+
+const deep=v=>JSON.parse(JSON.stringify(v));
+const rnd=n=>Math.floor(Math.random()*n);
+const choice=arr=>arr[rnd(arr.length)];
+const key=(x,y)=>`${x},${y}`;
+const dist=(a,b)=>Math.abs(a[0]-b[0])+Math.abs(a[1]-b[1]);
+const inBounds=(x,y)=>x>=0&&y>=0&&x<MAP_W&&y<MAP_H;
+
+function log(msg){const d=document.getElementById('log');const p=document.createElement('div');p.textContent=`[T${state.turn}] ${msg}`;d.prepend(p);}
+
+function makeHumanName(){
+  const isJP = Math.random() < 0.62;
+  let name = isJP ? choice(JP_ROMAN_FIRST) : choice(GLOBAL_FIRST);
+  let i=2;
+  while(state.usedNames.has(name)){ name = `${name}-${i}`; i++; }
+  state.usedNames.add(name);
+  return name;
+}
+
+function generateScenario(){
+  const world = choice(SCENARIO_WORDS.worlds);
+  const relic = choice(SCENARIO_WORDS.relics);
+  const villain = choice(SCENARIO_WORDS.villains);
+  const region = choice(SCENARIO_WORDS.regions);
+  const betrayalStage = 12 + rnd(8);
+  const comebackStage = 25 + rnd(8);
+  const newFactionStage = 32 + rnd(8);
+  const romanceStage = 18 + rnd(12);
+  const beats=[];
+  for(let s=1;s<=50;s++){
+    if(s===1) beats.push(`世界${world}で${relic}を巡る戦乱が開幕。主人公隊が出撃する。`);
+    else if(s===betrayalStage) beats.push(`第${s}戦: 同盟軍の裏切りが発生。戦況が急変する。`);
+    else if(s===romanceStage) beats.push(`第${s}戦: 戦場で芽生えた絆が、隊の士気を押し上げる。`);
+    else if(s===comebackStage) beats.push(`第${s}戦: 劣勢からの起死回生。反攻作戦が成功する。`);
+    else if(s===newFactionStage) beats.push(`第${s}戦: 新勢力が参戦。三つ巴の戦いへ突入。`);
+    else if(s<10) beats.push(`第${s}戦: ${region}で前哨戦。敵支配域を切り崩す。`);
+    else if(s<20) beats.push(`第${s}戦: ${villain}軍の補給線を断つ潜行作戦。`);
+    else if(s<30) beats.push(`第${s}戦: ${relic}断片を巡る争奪戦が激化。`);
+    else if(s<40) beats.push(`第${s}戦: 新旧勢力が衝突し、戦局は混迷。`);
+    else if(s<50) beats.push(`第${s}戦: 最終決戦前夜。主力同士の激突が続く。`);
+    else beats.push(`第50戦: ${villain}との最終決戦。${relic}を奪還して物語は完結。`);
+  }
+  state.scenario = { title:`Chronicle of ${world}`, world, relic, villain, beats };
+}
+
+function mkUnit(name, job, lv, team="ally", unique=false, recruitable=true){
+  const b=JOBS[job] || {hp:165, atk:24, mag:18, agi:14, move:5, range:3, eva:0.30, def:0.12};
+  return {name,job,lv, hp:b.hp+lv*8, maxHp:b.hp+lv*8, atk:b.atk+lv*2, mag:b.mag+lv*2, agi:b.agi+lv, move:b.move, range:b.range, eva:b.eva, def:b.def, healer:!!b.healer, aoe:!!b.aoe, guarded:false, unique, recruitable, team};
+}
+
+function initRoster(){
+  if(state.roster.length) return;
+  state.roster = [
+    {name:"Ares",job:"RuneLord",lv:1,hp:165,maxHp:165,atk:26,mag:20,agi:14,move:5,range:3,eva:0.30,def:0.12,healer:false,aoe:false,guarded:false,unique:true,recruitable:false,team:"ally"},
+    mkUnit(makeHumanName(), "白魔道士", 1, "ally"),
+    mkUnit(makeHumanName(), "ナイト", 1, "ally"),
+    mkUnit(makeHumanName(), "シーフ", 1, "ally"),
+  ];
+}
+
+function genMap(){
+  const weighted=[...Array(42).fill("草原"),...Array(18).fill("森林"),...Array(10).fill("山"),...Array(8).fill("毒沼"),...Array(8).fill("砦"),...Array(6).fill("水辺"),...Array(8).fill("砂漠")];
+  const map=Array.from({length:MAP_H},()=>Array.from({length:MAP_W},()=>choice(weighted)));
+  map[0][0]="草原"; map[MAP_H-1][MAP_W-1]="草原";
+  return map;
+}
+
+function resetTurnState(){
+  state.selected=null; state.moved=new Set(); state.acted=new Set(); state.finished=new Set();
+  for(const a of state.allies) a.guarded=false;
+}
+
+function objectiveText(){return state.objective==="annihilation"?"敵全滅":(state.objective==="reach"?"主人公をGへ到達":"護衛対象を守り8ターン耐久");}
+
+function ensureBgmAudio(){
+  if(state.bgmAudio) return state.bgmAudio;
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = "auto";
+  audio.volume = 0.45;
+  state.bgmAudio = audio;
+  return audio;
+}
+
+function stageBgmForObjective(objective){
+  if(objective === "annihilation") return {id:"annihilation", src:BGM_TRACKS.annihilation, label:"敵全滅BGM"};
+  return {id:"default", src:"", label:"BGMなし"};
+}
+
+function applyStageBgm(objective){
+  const bgm = stageBgmForObjective(objective);
+  state.activeBgm = bgm.label;
+  const audio = ensureBgmAudio();
+
+  if(!bgm.src){
+    audio.pause();
+    audio.removeAttribute("src");
+    return;
+  }
+
+  if(audio.getAttribute("src") !== bgm.src){
+    audio.src = bgm.src;
+  }
+
+  audio.currentTime = 0;
+  audio.play().then(()=>{
+    log(`BGM再生: ${bgm.label}`);
+  }).catch(()=>{
+    log(`BGM自動再生がブロックされました。画面クリック後に再生されます: ${bgm.label}`);
+  });
+}
+
+function createStageTemplate(){
+  const lv=Math.max(1,Math.floor(state.stage/4)+1);
+  const baseEnemy = state.stage===1 ? 4 : Math.min(9,4+Math.floor(state.stage/10));
+  const map=genMap();
+  let enemies=[], objective="annihilation";
+
+  if(state.stage===50){
+    enemies=[{name:state.scenario.villain,job:"Apocalypse",lv:60,hp:2600,maxHp:2600,atk:140,mag:145,agi:90,move:6,range:3,eva:0.12,def:0.18,guarded:false,healer:false,aoe:true,unique:true,recruitable:false,team:"enemy",displayId:1}];
+  } else {
+    let regularCount = baseEnemy;
+    const spawnRival = Math.random()<0.2;
+    if(spawnRival) regularCount = Math.max(2, baseEnemy-2);
+    for(let i=0;i<regularCount;i++) enemies.push(mkUnit(makeHumanName(), choice(Object.keys(JOBS)), lv, "enemy"));
+    if(spawnRival) enemies.push({name:"Weiss",job:"DualBreaker",lv:Math.max(2,Math.floor(state.stage/2)),hp:340,maxHp:340,atk:58,mag:38,agi:32,move:6,range:2,eva:0.20,def:0.14,guarded:false,healer:false,aoe:false,unique:true,recruitable:false,team:"enemy"});
+    enemies.forEach((e,i)=>e.displayId=i+1);
+    objective=choice(["annihilation","reach","defend"]);
+  }
+
+  const goal = objective==="reach"?[MAP_W-1,MAP_H-1]:null;
+  const npc = objective==="defend" ? mkUnit(makeHumanName(),"ナイト",Math.max(2,Math.floor(state.stage/5)),"npc",true,false) : null;
+  const allySeed = deep(state.roster.slice(0,MAX_DEPLOY).map(u=>({...u,hp:Math.max(1,u.hp),guarded:false})));
+
+  const positions={};
+  allySeed.forEach((u,i)=>positions[u.name]=[0,Math.min(i,MAP_H-1)]);
+  enemies.forEach((u,i)=>positions[u.name]=[MAP_W-1,Math.max(0,MAP_H-1-i)]);
+  if(npc) positions[npc.name]=[1,Math.floor(MAP_H/2)];
+  state.stageTemplate={map,enemies,objective,goal,npc,allySeed,positions};
+}
+
+function startStageAttempt(useRelief=false){
+  const t=state.stageTemplate;
+  state.map=deep(t.map); state.enemies=deep(t.enemies); state.objective=t.objective; state.goal=deep(t.goal); state.npc=deep(t.npc);
+  applyStageBgm(state.objective);
+  state.allies=deep(t.allySeed); state.positions=deep(t.positions);
+  if(useRelief){ for(const a of state.allies){ a.maxHp=Math.floor(a.maxHp*1.15); a.hp=a.maxHp; a.atk=Math.floor(a.atk*1.10); a.mag=Math.floor(a.mag*1.10); a.agi=Math.floor(a.agi*1.05);} log('救済措置: 味方を強化して再挑戦'); }
+  else log('救済措置なしで再挑戦');
+  state.turn=1; state.phase='player'; state.canAdvance=false; state.defeatedRecruitable=[]; resetTurnState(); render();
+}
+
+function startCurrentStage(){
+  createStageTemplate();
+  log(`Stage ${state.stage} 開始。 ${state.scenario.beats[state.stage-1]}`);
+  startStageAttempt(false);
+}
+
+function occupiedMap(){const m=new Map();[...state.allies,...state.enemies,...(state.npc?[state.npc]:[])].forEach(u=>{if(u.hp>0)m.set(key(...state.positions[u.name]),u)});return m;}
+
+function reachable(unit){
+  const start=state.positions[unit.name], q=[[start[0],start[1],0]], best=new Map([[key(...start),0]]), occ=occupiedMap();
+  while(q.length){
+    const [x,y,c]=q.shift();
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy; if(!inBounds(nx,ny)) continue;
+      const k=key(nx,ny); if(occ.has(k)&&k!==key(...start)) continue;
+      const nc=c+TERRAIN_COST[state.map[ny][nx]]; if(nc>unit.move) continue;
+      if(!best.has(k)||nc<best.get(k)){best.set(k,nc);q.push([nx,ny,nc]);}
+    }
+  }
+  return new Set([...best.keys()]);
+}
+
+const unitByName=name=>[...state.allies,...state.enemies,...(state.npc?[state.npc]:[])].find(u=>u.name===name);
+const tileElemAt=pos=>document.querySelector(`.tile[data-pos="${pos[0]},${pos[1]}"]`);
+
+function playBattlePopup(attackerName, defenderName, outcomeText, dmgText=''){
+  const at=tileElemAt(state.positions[attackerName]), de=tileElemAt(state.positions[defenderName]);
+  if(at){at.classList.add('flash-attacker');setTimeout(()=>at.classList.remove('flash-attacker'),380);}
+  if(de){
+    de.classList.add('flash-defender');
+    const outcome=document.createElement('div'); outcome.className=`battlePop ${outcomeText==='Avoid!'?'avoid':'hit'}`; outcome.textContent=outcomeText; de.appendChild(outcome);
+    let dmg=null; if(dmgText){dmg=document.createElement('div'); dmg.className='battlePop dmg'; dmg.textContent=dmgText; de.appendChild(dmg);} 
+    setTimeout(()=>{de.classList.remove('flash-defender'); if(outcome.parentNode)outcome.remove(); if(dmg&&dmg.parentNode)dmg.remove();},760);
+  }
+}
+
+function playHealPopup(targetName, heal){
+  const de=tileElemAt(state.positions[targetName]); if(!de) return;
+  const p=document.createElement('div'); p.className='battlePop heal'; p.textContent=`Heal +${heal}`; de.appendChild(p);
+  setTimeout(()=>{if(p.parentNode)p.remove();},760);
+}
+
+function terrainDefenseBonus(defender){
+  const pos=state.positions[defender.name];
+  if(!pos) return 0;
+  const t=state.map[pos[1]]?.[pos[0]];
+  if(t==="砦") return 0.15;
+  if(t==="山") return 0.10;
+  if(t==="森林") return 0.08;
+  return 0;
+}
+
+function countSurroundedByEnemies(defender, attackerTeam){
+  const pos=state.positions[defender.name], occ=occupiedMap();
+  let c=0;
+  for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    const nx=pos[0]+dx, ny=pos[1]+dy;
+    if(!inBounds(nx,ny)) continue;
+    const u=occ.get(key(nx,ny));
+    if(u && u.hp>0 && u.team===attackerTeam) c++;
+  }
+  return c;
+}
+
+function getPlacementMultiplier(defender, attackerTeam){
+  const s=countSurroundedByEnemies(defender, attackerTeam);
+  if(s>=4) return 2.0;
+  if(s===3) return 1.5;
+  if(s===2) return 1.2;
+  return 1.0;
+}
+
+function strike(attacker, defender, scale=1.0){
+  const evadeBonus = defender.guarded ? 0.20 : 0;
+  const hitChance = Math.max(0.45, Math.min(0.97, 0.92 - ((defender.eva||0.1)+evadeBonus)));
+  if(Math.random() > hitChance){ playBattlePopup(attacker.name, defender.name, 'Avoid!'); log(`${attacker.name}→${defender.name} Avoid!`); return {hit:false, damage:0}; }
+  let dmg=Math.max(8, (attacker.atk + Math.floor(attacker.mag/2)+attacker.lv*2 - defender.lv*2) * scale);
+  const guardDef = defender.guarded ? 0.25 : 0;
+  const terrainDef = terrainDefenseBonus(defender);
+  const placeMul = getPlacementMultiplier(defender, attacker.team);
+  dmg=Math.max(1, Math.floor(dmg * (1-(defender.def||0)-guardDef-terrainDef) * placeMul));
+  defender.hp=Math.max(0, defender.hp-dmg);
+  playBattlePopup(attacker.name, defender.name, 'Hit!', `-${dmg}`);
+  log(`${attacker.name}→${defender.name} ${dmg}ダメージ`);
+  if(defender.hp<=0) log(`${defender.name}を撃破`);
+  return {hit:true, damage:dmg};
+}
+
+function getAdjacentTargets(centerPos, team){
+  const occ=occupiedMap();
+  const targets=[];
+  for(const [dx,dy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]){
+    const nx=centerPos[0]+dx, ny=centerPos[1]+dy;
+    if(!inBounds(nx,ny)) continue;
+    const u=occ.get(key(nx,ny));
+    if(u && u.hp>0 && u.team===team) targets.push(u);
+  }
+  return targets;
+}
+
+function attackWithCounter(attacker, primaryDefender){
+  if(attacker.aoe){
+    const center=state.positions[primaryDefender.name];
+    const aoeTargets=getAdjacentTargets(center, primaryDefender.team);
+    log(`${attacker.name} の範囲魔法!`);
+    for(const t of aoeTargets){
+      const scale = t.name===primaryDefender.name ? 1.0 : 0.75;
+      strike(attacker,t,scale);
+      if(t.hp<=0 && t.team==='enemy' && t.recruitable && !t.unique) state.defeatedRecruitable.push({...t});
+    }
+  } else {
+    strike(attacker, primaryDefender, 1.0);
+    if(primaryDefender.hp<=0 && primaryDefender.team==='enemy' && primaryDefender.recruitable && !primaryDefender.unique) state.defeatedRecruitable.push({...primaryDefender});
+  }
+
+  if(primaryDefender.hp<=0) return;
+  const apos=state.positions[attacker.name], dpos=state.positions[primaryDefender.name];
+  if(dist(apos,dpos)<=primaryDefender.range){
+    log(`${primaryDefender.name} の反撃!`);
+    strike(primaryDefender, attacker, 1.0);
+  }
+}
+
+function castHeal(caster,target){
+  const heal=Math.max(18, Math.floor(caster.mag*1.2)+caster.lv*2);
+  const before=target.hp;
+  target.hp=Math.min(target.maxHp, target.hp+heal);
+  const actual=target.hp-before;
+  playHealPopup(target.name, actual);
+  log(`${caster.name} が ${target.name} を ${actual} 回復`);
+}
+
+function onTileClick(x,y){
+  if(state.phase!=='player' || state.canAdvance) return;
+  const occ=occupiedMap(), clicked=occ.get(key(x,y));
+  if(!state.selected){ if(clicked&&clicked.team==='ally'&&clicked.hp>0&&!state.finished.has(clicked.name)){state.selected=clicked.name;render();} return; }
+  const unit=unitByName(state.selected);
+  if(!unit||unit.hp<=0||state.finished.has(unit.name)){state.selected=null;render();return;}
+
+  if(clicked && clicked.team==='ally' && unit.healer){
+    const up=state.positions[unit.name], tp=state.positions[clicked.name];
+    if(dist(up,tp)<=unit.range){ castHeal(unit, clicked); state.acted.add(unit.name); state.finished.add(unit.name); state.selected=null; checkEnd(); render(); return; }
+  }
+
+  if(clicked && clicked.team==='enemy'){
+    const up=state.positions[unit.name], ep=state.positions[clicked.name];
+    if(dist(up,ep)<=unit.range){ attackWithCounter(unit, clicked); state.acted.add(unit.name); state.finished.add(unit.name); state.selected=null; checkEnd(); render(); return; }
+  }
+
+  if(!state.moved.has(unit.name)){
+    const reach=reachable(unit);
+    if(reach.has(key(x,y))){ state.positions[unit.name]=[x,y]; state.moved.add(unit.name); log(`${unit.name} が (${x},${y}) に移動`); render(); return; }
+  }
+  state.selected=null; render();
+}
+
+function defendSelected(){
+  if(state.phase!=='player' || !state.selected || state.canAdvance) return;
+  const u=unitByName(state.selected); if(!u||u.hp<=0) return;
+  u.guarded=true; state.finished.add(u.name); state.selected=null;
+  log(`${u.name} は防御態勢（次の自ターンまで回避/防御UP）`);
+  render();
+}
+
+function enemyTurn(){
+  if(state.canAdvance || state.phase!=='player') return;
+  state.phase='enemy';
+  const defenders=[...state.allies.filter(u=>u.hp>0), ...(state.npc&&state.npc.hp>0?[state.npc]:[])];
+  for(const e of state.enemies){
+    if(e.hp<=0 || defenders.length===0) continue;
+    const target=defenders.reduce((a,b)=>dist(state.positions[e.name],state.positions[a.name])<dist(state.positions[e.name],state.positions[b.name])?a:b);
+    let ep=state.positions[e.name], tp=state.positions[target.name];
+    if(dist(ep,tp)>e.range){
+      const r=reachable(e); let best=ep,bestD=dist(ep,tp);
+      for(const k of r){const [mx,my]=k.split(',').map(Number);const d=dist([mx,my],tp); if(d<bestD){best=[mx,my];bestD=d;}}
+      state.positions[e.name]=best; ep=best;
+    }
+    if(target.hp>0 && dist(ep,tp)<=e.range) attackWithCounter(e,target);
+  }
+  state.phase='player'; state.turn++; resetTurnState(); checkEnd(); render();
+}
+
+function showDefeatOptions(){
+  let c=''; while(!['1','2'].includes(c)){ c=prompt('全滅しました。\n1: 救済なしリトライ\n2: 救済ありリトライ（味方強化）')||''; }
+  if(c==='1'){state.retryNoRelief++; startStageAttempt(false);} else {state.retryWithRelief++; startStageAttempt(true);} }
+
+function checkEnd(){
+  const hero=state.allies.find(u=>u.unique);
+  if(!hero || hero.hp<=0){ loseStage(); return; }
+  if(state.allies.every(u=>u.hp<=0)){ loseStage(); return; }
+  if(state.objective==='annihilation'){ if(state.enemies.every(e=>e.hp<=0)) winStage(); }
+  else if(state.objective==='reach'){ const p=state.positions[hero.name]; if(p[0]===state.goal[0]&&p[1]===state.goal[1]) winStage(); }
+  else if(state.objective==='defend'){ if(!state.npc||state.npc.hp<=0){loseStage();return;} if(state.turn>8) winStage(); }
+}
+
+function maybeDismissAfterScout(){
+  if(state.roster.length<=10) return;
+  while(state.roster.length>10){
+    const cands=state.roster.filter(u=>!u.unique), info=cands.map((u,i)=>`${i+1}:${u.name}`).join(', ');
+    const pick=Number(prompt(`保持数11以上。解雇してください:\n${info}`));
+    if(pick>=1&&pick<=cands.length){const name=cands[pick-1].name; state.roster=state.roster.filter(u=>u.name!==name); log(`${name}を解雇`);} }
+}
+
+function winStage(){
+  state.allies.forEach(a=>{if(a.hp>0){a.lv++;a.maxHp+=8;a.hp=Math.min(a.maxHp,a.hp+12);a.atk+=2;a.mag+=1;a.agi+=1;}});
+  for(const a of state.allies){ const idx=state.roster.findIndex(r=>r.name===a.name); if(idx>=0) state.roster[idx]={...state.roster[idx],...a,team:'ally'}; }
+  if(state.defeatedRecruitable.length){
+    const names=state.defeatedRecruitable.map((u,i)=>`${i+1}:${u.name}(${u.job})`).join(', ');
+    const n=Number(prompt(`スカウト候補: ${names}\n番号入力で加入(空欄スキップ)`));
+    if(n>=1&&n<=state.defeatedRecruitable.length){const u=state.defeatedRecruitable[n-1];u.team='ally';state.roster.push(u);log(`${u.name}が加入`);maybeDismissAfterScout();}
+  }
+  state.phase='intermission'; state.canAdvance=true; state.selected=null;
+  log('ステージクリア。次ステージへ進行可能。ジョブチェンジ可能。');
+  if(state.stage===50 && !state.clear50){
+    state.clear50=true;
+    const t=state.retryNoRelief+state.retryWithRelief;
+    alert(`エンディング\n${state.scenario.title}\n${state.scenario.villain}を撃破し完結。\nRetryなし:${state.retryNoRelief}\nRetryあり:${state.retryWithRelief}\n合計:${t}`);
+    if(confirm('新しいシナリオで Stage1 から再開しますか？')){
+      state.stage=1; state.clear50=false; state.retryNoRelief=0; state.retryWithRelief=0; state.usedNames=new Set(); state.roster=[];
+      initRoster(); generateScenario(); startCurrentStage();
+    }
+  }
+}
+
+function loseStage(){ state.phase='defeat'; state.canAdvance=false; state.selected=null; log('敗北… 同一ステージをリトライ'); showDefeatOptions(); }
+
+function renderLegend(){document.getElementById('terrainLegend').innerHTML=TERRAIN.map(t=>`<div class="legendItem"><span class="swatch" style="background:${TERRAIN_COLORS[t]}"></span><span>${t} (コスト${TERRAIN_COST[t]})<br>${TERRAIN_EFFECT[t]}</span></div>`).join('');}
+
+function render(){
+  const map=document.getElementById('map'); map.innerHTML='';
+  const occ=occupiedMap(); const sel=state.selected?unitByName(state.selected):null;
+  const reachableSet=sel&&!state.moved.has(sel.name)?reachable(sel):new Set();
+
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++){
+    const tile=document.createElement('div'); tile.className='tile'; tile.dataset.pos=`${x},${y}`;
+    tile.style.background=TERRAIN_COLORS[state.map[y]?.[x] ?? '草原']; tile.textContent=(state.map[y]?.[x]??'草').slice(0,1);
+    const u=occ.get(key(x,y));
+    if(u){
+      const hpWrap=document.createElement('div'); hpWrap.className='hpBarWrap'; const hpBar=document.createElement('div'); hpBar.className='hpBar'; hpBar.style.width=`${Math.max(0,Math.min(100,Math.round((u.hp/u.maxHp)*100)))}%`; hpWrap.appendChild(hpBar); tile.appendChild(hpWrap);
+      const b=document.createElement('div'); b.className='unitBadge';
+      if(u.team==='ally'){
+        const moved=state.moved.has(u.name);
+        const done=state.finished.has(u.name);
+        if(done) b.textContent='E';
+        else if(moved) b.textContent='M';
+        else b.textContent=u.unique?'H':'A';
+      }
+      else if(u.team==='npc') b.textContent='N';
+      else if(u.name===state.scenario.villain) b.textContent='B';
+      else if(u.name==='Weiss') b.textContent='R';
+      else b.textContent=`E${u.displayId||'?'}`;
+      tile.appendChild(b);
+      const n=document.createElement('div'); n.className='unitName'; n.textContent=u.name; tile.appendChild(n);
+    }
+    if(u && u.team==='ally' && state.moved.has(u.name)) tile.classList.add('movedUnit');
+    if(u && u.team==='ally' && state.finished.has(u.name)) tile.classList.add('doneUnit');
+    if(sel && reachableSet.has(key(x,y))) tile.classList.add('reachable');
+    if(sel && u && u.team==='enemy' && dist(state.positions[sel.name],state.positions[u.name])<=sel.range) tile.classList.add('targetable');
+    if(sel && u && u.team==='ally' && sel.healer && dist(state.positions[sel.name],state.positions[u.name])<=sel.range) tile.classList.add('healable');
+    if(sel && state.positions[sel.name][0]===x && state.positions[sel.name][1]===y) tile.classList.add('selected');
+    tile.onclick=()=>onTileClick(x,y); map.appendChild(tile);
+  }
+
+  document.getElementById('statusBar').textContent=`Stage:${state.stage} Turn:${state.turn} 目標:${objectiveText()} フェーズ:${state.phase} BGM:${state.activeBgm} | Retry(なし:${state.retryNoRelief}/あり:${state.retryWithRelief})`;
+  document.getElementById('scenarioBox').textContent = state.scenario ? `${state.scenario.title} — ${state.scenario.beats[state.stage-1] || ''}` : '';
+  document.getElementById('allyList').innerHTML=state.allies.map(u=>{const m=state.moved.has(u.name)?'移動済':'未移動',d=state.finished.has(u.name)?'行動終了':'行動可',g=u.guarded?'防御':''; return `<div class='row'><span>${u.name}(${u.job})</span><span>Lv${u.lv} HP${u.hp}/${u.maxHp} 回避${Math.round((u.eva||0)*100)}% ${g} ${m}/${d}</span></div>`;}).join('');
+  document.getElementById('enemyList').innerHTML=state.enemies.filter(u=>u.hp>0).map(u=>{const id=u.name==='Weiss'?'R':(u.name===state.scenario.villain?'B':`E${u.displayId||'?'}`);return `<div class='row'><span>${id}: ${u.name}(${u.job})</span><span>Lv${u.lv} HP${u.hp}/${u.maxHp}</span></div>`;}).join('')||'<div>敵なし</div>';
+}
+
+document.getElementById('endTurnBtn').onclick=()=>enemyTurn();
+document.getElementById('waitBtn').onclick=()=>defendSelected();
+document.getElementById('nextStageBtn').onclick=()=>{if(!state.canAdvance){alert('このステージをクリアするまで次ステージには進めません。');return;} state.stage++; startCurrentStage();};
+document.getElementById('saveBtn').onclick=()=>{localStorage.setItem('ffta_state',JSON.stringify({...state,moved:[...state.moved],acted:[...state.acted],finished:[...state.finished],usedNames:[...state.usedNames]}));log('セーブ完了(localStorage)');};
+document.getElementById('loadBtn').onclick=()=>{const d=localStorage.getItem('ffta_state');if(!d){alert('セーブデータなし');return;}const o=JSON.parse(d);Object.assign(state,o);state.moved=new Set(o.moved||[]);state.acted=new Set(o.acted||[]);state.finished=new Set(o.finished||[]);state.usedNames=new Set(o.usedNames||[]);state.selected=null; if(!state.scenario) generateScenario(); log('ロード完了');render();};
+document.getElementById('jobBtn').onclick=()=>{
+  if(!state.canAdvance){alert('ジョブチェンジはステージクリア後〜次ステージ開始前のみ可能です。');return;}
+  const list=state.roster.map((u,i)=>`${i+1}:${u.name}[${u.job}]`).join(', ');
+  const idx=Number(prompt(`転職するユニット番号\n${list}`))-1; if(!(idx>=0&&idx<state.roster.length))return;
+  if(state.roster[idx].unique){alert('主人公は転職不可');return;}
+  const jobs=Object.keys(JOBS).join(','); const j=prompt(`新ジョブ入力 (${jobs})`); if(!JOBS[j]) return;
+  const b=JOBS[j]; Object.assign(state.roster[idx],{job:j,move:b.move,range:b.range,eva:b.eva,def:b.def,healer:!!b.healer,aoe:!!b.aoe}); log(`${state.roster[idx].name}を${j}に変更`);
+};
+
+
+
+document.addEventListener('keydown', (ev)=>{
+  const k = ev.key.toLowerCase();
+  if(k==='e'){ ev.preventDefault(); enemyTurn(); }
+  else if(k==='s'){ ev.preventDefault(); document.getElementById('saveBtn').click(); }
+  else if(k==='l'){ ev.preventDefault(); document.getElementById('loadBtn').click(); }
+  else if(k==='n'){ ev.preventDefault(); document.getElementById('nextStageBtn').click(); }
+  else if(k==='g' || k==='d'){ ev.preventDefault(); defendSelected(); }
+});
+
+initRoster(); generateScenario(); renderLegend(); startCurrentStage();
+</script>
+</body>
+</html>
