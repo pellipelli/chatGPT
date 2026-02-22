@@ -85,6 +85,7 @@ const TERRAIN_EFFECT = {草原:"標準地形", 山:"移動やや困難・防御�
 
 const BGM_TRACKS = {
   annihilation: "music/Nebula_Annihilation_(SubjugationBattle).mp3",
+  default: "music/Nebula_Crusader.2mp3.mp3",
 };
 
 const JOBS = {
@@ -199,7 +200,7 @@ function ensureBgmAudio(){
 
 function stageBgmForObjective(objective){
   if(objective === "annihilation") return {id:"annihilation", src:BGM_TRACKS.annihilation, label:"敵全滅BGM"};
-  return {id:"default", src:"", label:"BGMなし"};
+  return {id:"default", src:BGM_TRACKS.default, label:"通常BGM"};
 }
 
 function applyStageBgm(objective){
