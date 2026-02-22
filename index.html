@@ -87,6 +87,11 @@ const BGM_TRACKS = {
   annihilation: "music/Nebula_Annihilation_(SubjugationBattle).mp3",
   default: "music/Nebula_Crusader.mp3",
 };
+for (const [k, v] of Object.entries(BGM_TRACKS)) {
+  fetch(v)
+    .then(r => console.log("LOAD TEST:", k, v, r.status))
+    .catch(e => console.error("LOAD ERROR:", k, v, e));
+}
 
 const JOBS = {
   ナイト:{hp:130, atk:20, mag:8, agi:10, move:5, range:1, eva:0.10, def:0.10},
