@@ -87,16 +87,11 @@ const BGM_TRACKS = {
   annihilation: "music/Nebula_Annihilation_(SubjugationBattle).mp3",
   default: "music/Nebula_Crusader.mp3",
 };
-<script>
-const BGM_TRACKS = {
-  annihilation: "music/Nebula_Annihilation_(SubjugationBattle).mp3",
-  default: "music/Nebula_Crusader.mp3",
-};
 
-// クリックで確実に再生するテスト
+// クリックで確実に再生するテスト（このscript内にそのまま置く）
 let __bgm;
 window.addEventListener("pointerdown", async () => {
-  if (__bgm) return; // 二重起動防止
+  if (__bgm) return;
   __bgm = new Audio(BGM_TRACKS.default);
   __bgm.loop = true;
   __bgm.volume = 0.6;
@@ -108,7 +103,6 @@ window.addEventListener("pointerdown", async () => {
     console.error("BGM PLAY FAILED", e);
   }
 }, { once: true });
-</script>
 
 const JOBS = {
   ナイト:{hp:130, atk:20, mag:8, agi:10, move:5, range:1, eva:0.10, def:0.10},
